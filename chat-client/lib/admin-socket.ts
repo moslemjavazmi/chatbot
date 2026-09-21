@@ -5,18 +5,37 @@ import {
 
 /**
  * ---------------------------------------------------------
+ * Types
+ * ---------------------------------------------------------
+ */
+
+export type SupportIdentityType =
+  | "user"
+  | "tasker"
+  | "guest"
+  | "admin";
+
+export type SupportCustomerType =
+  | "user"
+  | "tasker"
+  | "guest";
+
+export type SupportSenderRole =
+  | "user"
+  | "tasker"
+  | "guest"
+  | "admin";
+
+/**
+ * ---------------------------------------------------------
  * Presence
  * ---------------------------------------------------------
  */
 
-interface SupportPresence {
+export interface SupportPresence {
   id: string;
 
-  type:
-    | "user"
-    | "tasker"
-    | "guest"
-    | "admin";
+  type: SupportIdentityType;
 
   online: boolean;
 
@@ -53,11 +72,7 @@ export interface SupportMessage {
 
   senderId: string;
 
-  senderRole:
-    | "user"
-    | "tasker"
-    | "guest"
-    | "admin";
+  senderRole: SupportSenderRole;
 
   text: string;
 
@@ -71,18 +86,31 @@ export interface SupportMessage {
  */
 
 interface ServerToClientEvents {
+  /**
+   * All visitors/users/taskers/guests
+   * currently known to presence manager.
+   */
   "support:presence:list": (
     identities: SupportPresence[]
   ) => void;
 
+  /**
+   * Presence changed.
+   */
   "support:presence:update": (
     presence: SupportPresence
   ) => void;
 
+  /**
+   * Selected conversation history.
+   */
   "support:conversation:history": (
     messages: SupportMessage[]
   ) => void;
 
+  /**
+   * New support message.
+   */
   "message:new": (
     message: SupportMessage
   ) => void;
@@ -95,6 +123,10 @@ interface ServerToClientEvents {
  */
 
 interface ClientToServerEvents {
+  /**
+   * Admin finds/creates customer's
+   * support conversation.
+   */
   "support:conversation:get-by-customer": (
     payload: {
       customerId: string;
@@ -113,6 +145,9 @@ interface ClientToServerEvents {
     }) => void
   ) => void;
 
+  /**
+   * Admin joins selected conversation.
+   */
   "support:conversation:join": (
     payload: {
       conversationId: string;
@@ -124,6 +159,9 @@ interface ClientToServerEvents {
     }) => void
   ) => void;
 
+  /**
+   * Admin sends support message.
+   */
   "message:send": (
     payload: {
       text: string;

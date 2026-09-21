@@ -7,36 +7,32 @@ import {
   useState,
 } from "react";
 
-import { socket } from "@/lib/socket";
+import {
+  socket,
+  ChatMessage,
+} from "@/lib/socket";
 
-type UserRole =
-  | "user"
-  | "tasker"
-  | "admin";
-
-interface Message {
-  id: string;
-  senderId: string;
-  senderRole: UserRole;
-  text: string;
-  createdAt: string;
-}
-
-/*
- * Temporary user.
+/**
+ * ---------------------------------------------------------
+ * Temporary Current User
+ * ---------------------------------------------------------
  *
- * Change this value to test
- * different users.
+ * Later this will come from JWT / auth store.
  */
 
-// const CURRENT_USER = {
-//   id: "user-1",
-//   role: "user" as const,
-// };
 const CURRENT_USER = {
-  id: "user-1",
-  role: "user" as const,
+  id: "tasker-1",
+  role: "tasker" as const,
 };
+
+/**
+ * ---------------------------------------------------------
+ * Task
+ * ---------------------------------------------------------
+ */
+
+const TASK_ID = "101";
+
 export default function Home() {
   const [isConnected, setIsConnected] =
     useState(false);
@@ -45,68 +41,115 @@ export default function Home() {
     useState("");
 
   const [messages, setMessages] =
-    useState<Message[]>([]);
+    useState<ChatMessage[]>([]);
+
+  /**
+   * -------------------------------------------------------
+   * Socket lifecycle
+   * -------------------------------------------------------
+   */
 
   useEffect(() => {
     function handleConnect() {
-      setIsConnected(true);
-
       console.log(
-        "Connected:",
+        "Task socket connected:",
         socket.id
       );
+
+      setIsConnected(true);
     }
 
     function handleDisconnect() {
-      setIsConnected(false);
-
       console.log(
-        "Disconnected"
+        "Task socket disconnected"
       );
+
+      setIsConnected(false);
     }
 
     function handleConnectError(
       error: Error
     ) {
       console.error(
-        "Connection error:",
+        "Task socket connection error:",
         error.message
       );
+
+      setIsConnected(false);
     }
 
-function handleNewMessage(message: Message) {
-  console.log(
-    "MESSAGE RECEIVED:",
-    message.id,
-    message.text,
-    "socket:",
-    socket.id
-  );
+    /**
+     * -----------------------------------------------------
+     * New real-time message
+     * -----------------------------------------------------
+     */
 
-  setMessages((previousMessages) => {
-    const alreadyExists = previousMessages.some(
-      (existingMessage) =>
-        existingMessage.id === message.id
-    );
-
-    if (alreadyExists) {
+    function handleNewMessage(
+      incomingMessage: ChatMessage
+    ) {
       console.log(
-        "DUPLICATE MESSAGE:",
-        message.id
+        "TASK MESSAGE RECEIVED:",
+        incomingMessage
       );
 
-      return previousMessages;
+      setMessages(
+        (previousMessages) => {
+          const alreadyExists =
+            previousMessages.some(
+              (existingMessage) =>
+                existingMessage.id ===
+                incomingMessage.id
+            );
+
+          if (alreadyExists) {
+            return previousMessages;
+          }
+
+          return [
+            ...previousMessages,
+            incomingMessage,
+          ];
+        }
+      );
     }
 
-    return [
-      ...previousMessages,
-      message,
-    ];
-  });
-}
+    /**
+     * -----------------------------------------------------
+     * Task history
+     * -----------------------------------------------------
+     */
 
-    /*
+    function handleTaskHistory(
+      history: ChatMessage[]
+    ) {
+      console.log(
+        "TASK HISTORY RECEIVED:",
+        history
+      );
+
+      /**
+       * Remove possible duplicates.
+       */
+      const uniqueMessages =
+        history.filter(
+          (
+            message,
+            index,
+            array
+          ) =>
+            array.findIndex(
+              (item) =>
+                item.id === message.id
+            ) === index
+        );
+
+      setMessages(uniqueMessages);
+    }
+
+    /**
+     * -----------------------------------------------------
      * Register listeners
+     * -----------------------------------------------------
      */
 
     socket.on(
@@ -129,8 +172,15 @@ function handleNewMessage(message: Message) {
       handleNewMessage
     );
 
-    /*
-     * Send temporary identity
+    socket.on(
+      "task:history",
+      handleTaskHistory
+    );
+
+    /**
+     * -----------------------------------------------------
+     * Temporary authentication
+     * -----------------------------------------------------
      */
 
     socket.auth = {
@@ -138,14 +188,18 @@ function handleNewMessage(message: Message) {
       role: CURRENT_USER.role,
     };
 
-    /*
-     * Connect to server
+    /**
+     * -----------------------------------------------------
+     * Connect
+     * -----------------------------------------------------
      */
 
     socket.connect();
 
-    /*
+    /**
+     * -----------------------------------------------------
      * Cleanup
+     * -----------------------------------------------------
      */
 
     return () => {
@@ -169,18 +223,33 @@ function handleNewMessage(message: Message) {
         handleNewMessage
       );
 
+      socket.off(
+        "task:history",
+        handleTaskHistory
+      );
+
       socket.disconnect();
     };
   }, []);
+
+  /**
+   * ---------------------------------------------------------
+   * Send message
+   * ---------------------------------------------------------
+   */
 
   function handleSubmit(
     event: FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
-    const text = message.trim();
+    const text =
+      message.trim();
 
-    if (!text || !isConnected) {
+    if (
+      !text ||
+      !isConnected
+    ) {
       return;
     }
 
@@ -209,9 +278,17 @@ function handleNewMessage(message: Message) {
     setMessage("");
   }
 
+  /**
+   * ---------------------------------------------------------
+   * Render
+   * ---------------------------------------------------------
+   */
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-gray-100 p-6">
       <div className="flex w-full max-w-lg flex-col rounded-xl bg-white p-6 shadow">
+
+        {/* Header */}
 
         <div className="mb-6">
           <h1 className="text-2xl font-bold">
@@ -219,6 +296,13 @@ function handleNewMessage(message: Message) {
           </h1>
 
           <div className="mt-3 rounded-lg bg-gray-100 p-3">
+            <p className="text-sm">
+              Task ID:{" "}
+              <strong>
+                {TASK_ID}
+              </strong>
+            </p>
+
             <p className="text-sm">
               User ID:{" "}
               <strong>
@@ -250,49 +334,68 @@ function handleNewMessage(message: Message) {
           </p>
         </div>
 
+        {/* Messages */}
+
         <div className="mb-6 flex min-h-64 flex-col gap-3 overflow-y-auto rounded-lg border p-4">
           {messages.length === 0 ? (
             <p className="text-sm text-gray-400">
               No messages yet.
             </p>
           ) : (
-            messages.map((message) => (
-              <div
-                key={message.id}
-                className="rounded-lg bg-gray-100 p-3"
-              >
-                <p className="text-xs text-gray-500">
-                  {message.senderId} (
-                  {message.senderRole})
-                </p>
+            messages.map(
+              (item) => (
+                <div
+                  key={item.id}
+                  className="rounded-lg bg-gray-100 p-3"
+                >
+                  <p className="text-xs text-gray-500">
+                    {item.senderId} (
+                    {
+                      item.senderRole
+                    })
+                  </p>
 
-                <p className="mt-1">
-                  {message.text}
-                </p>
-              </div>
-            ))
+                  <p className="mt-1">
+                    {item.text}
+                  </p>
+
+                  <p className="mt-1 text-[10px] text-gray-400">
+                    {new Date(
+                      item.createdAt
+                    ).toLocaleTimeString()}
+                  </p>
+                </div>
+              )
+            )
           )}
         </div>
 
+        {/* Input */}
+
         <form
-          onSubmit={handleSubmit}
+          onSubmit={
+            handleSubmit
+          }
           className="flex gap-2"
         >
           <input
             type="text"
             value={message}
-            onChange={(event) => {
+            onChange={(event) =>
               setMessage(
                 event.target.value
-              );
-            }}
+              )
+            }
             placeholder="Write a message..."
             className="flex-1 rounded-lg border px-4 py-3 outline-none"
           />
 
           <button
             type="submit"
-            disabled={!isConnected}
+            disabled={
+              !isConnected ||
+              !message.trim()
+            }
             className="rounded-lg bg-black px-5 py-3 text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             Send

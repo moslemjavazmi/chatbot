@@ -63,15 +63,58 @@ export interface SupportConversation {
 
 export interface ChatMessage {
   id: string;
+
+  /**
+   * For Task Chat:
+   * conversationId = ChatSession.id
+   *
+   * For Support Chat:
+   * conversationId = SupportConversation.id
+   */
   conversationId: string;
+
   senderId: string;
+
   senderRole:
     | "user"
     | "tasker"
     | "guest"
     | "admin";
+
   text: string;
+
   createdAt: string;
+}
+
+/**
+ * ---------------------------------------------------------
+ * Chat Session
+ * ---------------------------------------------------------
+ */
+
+export type ChatSessionStatus =
+  | "active"
+  | "closed";
+
+export interface ChatParticipant {
+  id: string;
+  role: "user" | "tasker";
+}
+
+export interface ChatSession {
+  id: string;
+
+  type: "task";
+
+  taskId: string;
+
+  participants: ChatParticipant[];
+
+  status: ChatSessionStatus;
+
+  createdAt: string;
+
+  updatedAt: string;
 }
 
 /**
@@ -86,8 +129,8 @@ export interface SocketData {
   supportIdentity: SupportIdentity;
 
   /**
-   * The support conversation currently joined
-   * by this socket.
+   * Current support conversation
+   * joined by this socket.
    */
   supportConversationId?: string;
 }
@@ -100,19 +143,24 @@ export interface SocketData {
 
 export interface ClientToServerEvents {
   /**
-   * General message event.
+   * -------------------------------------------------------
+   * Send message
+   * -------------------------------------------------------
    *
    * Task Chat:
+   *
    * {
    *   text: "hello"
    * }
    *
    * Support Chat:
+   *
    * {
    *   text: "hello",
    *   conversationId: "support-conv-..."
    * }
    */
+
   "message:send": (
     payload: {
       text: string;
@@ -126,8 +174,11 @@ export interface ClientToServerEvents {
   ) => void;
 
   /**
-   * Customer gets/creates their support conversation.
+   * -------------------------------------------------------
+   * Customer gets/creates support conversation
+   * -------------------------------------------------------
    */
+
   "support:conversation:get": (
     acknowledgement: (response: {
       success: boolean;
@@ -137,8 +188,11 @@ export interface ClientToServerEvents {
   ) => void;
 
   /**
-   * Admin joins a support conversation.
+   * -------------------------------------------------------
+   * Admin joins support conversation
+   * -------------------------------------------------------
    */
+
   "support:conversation:join": (
     payload: {
       conversationId: string;
@@ -150,8 +204,11 @@ export interface ClientToServerEvents {
   ) => void;
 
   /**
-   * Admin finds a conversation by customer.
+   * -------------------------------------------------------
+   * Admin finds conversation by customer
+   * -------------------------------------------------------
    */
+
   "support:conversation:get-by-customer": (
     payload: {
       customerId: string;
@@ -176,26 +233,36 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   /**
-   * New message.
+   * New message
    */
   "message:new": (
     message: ChatMessage
   ) => void;
 
   /**
-   * Support conversation history.
+   * Task Chat history
+   */
+  "task:history": (
+    messages: ChatMessage[]
+  ) => void;
+
+  /**
+   * Support Chat history
    */
   "support:conversation:history": (
     messages: ChatMessage[]
   ) => void;
 
   /**
-   * Presence.
+   * Presence list
    */
   "support:presence:list": (
     identities: SupportPresence[]
   ) => void;
 
+  /**
+   * Presence update
+   */
   "support:presence:update": (
     presence: SupportPresence
   ) => void;
@@ -221,29 +288,3 @@ export type ChatSocket = Socket<
   InterServerEvents,
   SocketData
 >;
-
-
-/**
- * ---------------------------------------------------------
- * for chat session
- * ---------------------------------------------------------
- */
-
-export type ChatSessionStatus =
-  | "active"
-  | "closed";
-
-export interface ChatParticipant {
-  id: string;
-  role: "user" | "tasker";
-}
-
-export interface ChatSession {
-  id: string;
-  type: "task";
-  taskId: string;
-  participants: ChatParticipant[];
-  status: ChatSessionStatus;
-  createdAt: string;
-  updatedAt: string;
-}

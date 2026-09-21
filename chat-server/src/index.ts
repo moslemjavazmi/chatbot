@@ -7,6 +7,10 @@ import { randomUUID } from "node:crypto";
 import { Server } from "socket.io";
 
 import {
+  connectMongoDB,
+} from "./database/mongodb";
+
+import {
   ChatSocket,
   ClientToServerEvents,
   ServerToClientEvents,
@@ -14,6 +18,7 @@ import {
   UserRole,
   SupportIdentity,
   ChatMessage,
+  ChatSession,
 } from "./types/socket";
 
 import {
@@ -24,6 +29,17 @@ import {
   PresenceManager,
 } from "./presence/presence-manager";
 
+import {
+  MessageRepository,
+} from "./repositories/message.repository";
+
+import {
+  ChatSessionRepository,
+} from "./repositories/chat-session.repository";
+
+import {
+  SupportConversationRepository,
+} from "./repositories/SupportConversationRepository";
 /**
  * ---------------------------------------------------------
  * Express
@@ -78,17 +94,24 @@ const io = new Server<
  * ---------------------------------------------------------
  */
 
-app.get("/health", (_req, res) => {
-  res.json({
-    status: "ok",
-  });
-});
+app.get(
+  "/health",
+  (_req, res) => {
+    res.json({
+      status: "ok",
+    });
+  }
+);
 
-app.get("/", (_req, res) => {
-  res.json({
-    message: "Chat server is running",
-  });
-});
+app.get(
+  "/",
+  (_req, res) => {
+    res.json({
+      message:
+        "Chat server is running",
+    });
+  }
+);
 
 /**
  * ---------------------------------------------------------
@@ -98,19 +121,19 @@ app.get("/", (_req, res) => {
  * These are temporary.
  *
  * Later:
- * JWT will replace this section.
+ * JWT will replace this.
  */
 
 const TASK_ID = "101";
 
-const TASK_OWNER_ID = "user-1";
+const TASK_OWNER_ID =
+  "user-1";
 
-const TASKER_ID = "tasker-1";
+const TASKER_ID =
+  "tasker-1";
 
-const ADMIN_ID = "admin-1";
-
-const TASK_ROOM =
-  `task:${TASK_ID}`;
+const ADMIN_ID =
+  "admin-1";
 
 /**
  * ---------------------------------------------------------
@@ -137,7 +160,7 @@ const users = {
 
 /**
  * ---------------------------------------------------------
- * Managers / Stores
+ * Managers / Repositories
  * ---------------------------------------------------------
  */
 
@@ -147,27 +170,46 @@ const presenceManager =
 const conversationStore =
   new SupportConversationStore();
 
+const messageRepository =
+  new MessageRepository();
+
+const sessionRepository =
+  new ChatSessionRepository();
+
+
+
+const supportConversationRepository =
+  new SupportConversationRepository();
 /**
  * ---------------------------------------------------------
- * Temporary message history
+ * Current temporary Task Chat Session
  * ---------------------------------------------------------
  *
- * IMPORTANT:
+ * MongoDB is the source of truth.
  *
- * This is only in memory.
- *
- * Server restart => messages disappear.
- *
- * Later:
- * MongoDB will replace this.
+ * This variable only keeps the current
+ * session in memory after server startup.
  */
 
-const supportMessages =
-  new Map<string, ChatMessage[]>();
+let taskChatSession:
+  | ChatSession
+  | null = null;
 
 /**
  * ---------------------------------------------------------
- * Helper: get conversation room
+ * Task Chat Room
+ * ---------------------------------------------------------
+ */
+
+function getTaskChatRoom(
+  sessionId: string
+) {
+  return `chat:session:${sessionId}`;
+}
+
+/**
+ * ---------------------------------------------------------
+ * Support Chat Room
  * ---------------------------------------------------------
  */
 
@@ -175,44 +217,6 @@ function getSupportRoom(
   conversationId: string
 ) {
   return `support:conversation:${conversationId}`;
-}
-
-/**
- * ---------------------------------------------------------
- * Helper: save support message
- * ---------------------------------------------------------
- */
-
-function saveSupportMessage(
-  message: ChatMessage
-) {
-  const existing =
-    supportMessages.get(
-      message.conversationId
-    ) ?? [];
-
-  existing.push(message);
-
-  supportMessages.set(
-    message.conversationId,
-    existing
-  );
-}
-
-/**
- * ---------------------------------------------------------
- * Helper: get support messages
- * ---------------------------------------------------------
- */
-
-function getSupportMessages(
-  conversationId: string
-): ChatMessage[] {
-  return (
-    supportMessages.get(
-      conversationId
-    ) ?? []
-  );
 }
 
 /**
@@ -226,101 +230,107 @@ function getSupportMessages(
  * JWT.
  */
 
-io.use((socket, next) => {
-  console.log(
-    "Incoming socket auth:",
-    socket.handshake.auth
-  );
+io.use(
+  (socket, next) => {
+    console.log(
+      "Incoming socket auth:",
+      socket.handshake.auth
+    );
 
-  const userId =
-    socket.handshake.auth?.userId;
+    const userId =
+      socket.handshake.auth?.userId;
 
-  const role =
-    socket.handshake.auth?.role;
+    const role =
+      socket.handshake.auth?.role;
 
-  const anonymousId =
-    socket.handshake.auth?.anonymousId;
+    const anonymousId =
+      socket.handshake.auth?.anonymousId;
 
-  /**
-   * -------------------------------------------------------
-   * Guest
-   * -------------------------------------------------------
-   */
+    /**
+     * -------------------------------------------------------
+     * Guest
+     * -------------------------------------------------------
+     */
 
-  if (anonymousId) {
-    if (
-      typeof anonymousId !== "string" ||
-      !anonymousId.startsWith("guest-")
-    ) {
+    if (anonymousId) {
+      if (
+        typeof anonymousId !==
+          "string" ||
+        !anonymousId.startsWith(
+          "guest-"
+        )
+      ) {
+        return next(
+          new Error(
+            "Invalid anonymous identity"
+          )
+        );
+      }
+
+      socket.data.supportIdentity = {
+        id: anonymousId,
+        type: "guest",
+      };
+
+      console.log(
+        "Guest connected:",
+        anonymousId
+      );
+
+      return next();
+    }
+
+    /**
+     * -------------------------------------------------------
+     * Authenticated temporary user
+     * -------------------------------------------------------
+     */
+
+    if (!userId || !role) {
       return next(
         new Error(
-          "Invalid anonymous identity"
+          "userId/role or anonymousId is required"
         )
       );
     }
 
+    const user =
+      users[
+        userId as keyof typeof users
+      ];
+
+    if (!user) {
+      return next(
+        new Error(
+          "User does not exist"
+        )
+      );
+    }
+
+    if (user.role !== role) {
+      return next(
+        new Error(
+          "Invalid user role"
+        )
+      );
+    }
+
+    socket.data.user =
+      user;
+
     socket.data.supportIdentity = {
-      id: anonymousId,
-      type: "guest",
+      id: user.id,
+      type: user.role,
     };
 
     console.log(
-      "Guest connected:",
-      anonymousId
+      "Authenticated:",
+      socket.data.supportIdentity
     );
 
-    return next();
+    next();
   }
-
-  /**
-   * -------------------------------------------------------
-   * Authenticated temporary user
-   * -------------------------------------------------------
-   */
-
-  if (!userId || !role) {
-    return next(
-      new Error(
-        "userId/role or anonymousId is required"
-      )
-    );
-  }
-
-  const user =
-    users[
-      userId as keyof typeof users
-    ];
-
-  if (!user) {
-    return next(
-      new Error(
-        "User does not exist"
-      )
-    );
-  }
-
-  if (user.role !== role) {
-    return next(
-      new Error(
-        "Invalid user role"
-      )
-    );
-  }
-
-  socket.data.user = user;
-
-  socket.data.supportIdentity = {
-    id: user.id,
-    type: user.role,
-  };
-
-  console.log(
-    "Authenticated:",
-    socket.data.supportIdentity
-  );
-
-  next();
-});
+);
 
 /**
  * ---------------------------------------------------------
@@ -365,30 +375,60 @@ io.on(
      * Task Chat
      * -----------------------------------------------------
      *
-     * Only task owner and tasker
-     * can join task room.
+     * Only participants can join.
      */
 
-    if (
-      supportIdentity.id ===
-      TASK_OWNER_ID
-    ) {
-      socket.join(TASK_ROOM);
+    if (taskChatSession) {
+      const isTaskParticipant =
+        taskChatSession.participants.some(
+          (participant) =>
+            participant.id ===
+              supportIdentity.id &&
+            participant.role ===
+              supportIdentity.type
+        );
 
-      console.log(
-        `${supportIdentity.id} joined ${TASK_ROOM}`
-      );
-    }
+      if (isTaskParticipant) {
+        const taskChatRoom =
+          getTaskChatRoom(
+            taskChatSession.id
+          );
 
-    if (
-      supportIdentity.id ===
-      TASKER_ID
-    ) {
-      socket.join(TASK_ROOM);
+        socket.join(
+          taskChatRoom
+        );
 
-      console.log(
-        `${supportIdentity.id} joined ${TASK_ROOM}`
-      );
+        console.log(
+          `${supportIdentity.id} joined ${taskChatRoom}`
+        );
+
+        /**
+         * -------------------------------------------------
+         * Task Chat History
+         * -------------------------------------------------
+         */
+
+        void messageRepository
+          .findByConversationId(
+            taskChatSession.id
+          )
+          .then(
+            (messages) => {
+              socket.emit(
+                "task:history",
+                messages
+              );
+            }
+          )
+          .catch(
+            (error) => {
+              console.error(
+                "Failed to load task history:",
+                error
+              );
+            }
+          );
+      }
     }
 
     /**
@@ -415,16 +455,20 @@ io.on(
 
     socket.on(
       "support:conversation:get",
-      (acknowledgement) => {
+      async (
+        acknowledgement
+      ) => {
         const identity =
           socket.data.supportIdentity;
 
         /**
-         * Admin cannot create customer
-         * conversation.
+         * Admin cannot create
+         * customer conversation.
          */
+
         if (
-          identity.type === "admin"
+          identity.type ===
+          "admin"
         ) {
           return acknowledgement({
             success: false,
@@ -435,7 +479,14 @@ io.on(
 
         /**
          * Get/create conversation.
+         *
+         * NOTE:
+         * Conversation metadata is still
+         * temporarily stored in memory.
+         *
+         * Later this will move to MongoDB.
          */
+
         const conversation =
           conversationStore.getOrCreate(
             identity
@@ -444,6 +495,7 @@ io.on(
         /**
          * Conversation room.
          */
+
         const room =
           getSupportRoom(
             conversation.id
@@ -452,12 +504,9 @@ io.on(
         /**
          * Join conversation.
          */
+
         socket.join(room);
 
-        /**
-         * Remember conversation
-         * on socket.
-         */
         socket.data.supportConversationId =
           conversation.id;
 
@@ -466,19 +515,38 @@ io.on(
         );
 
         /**
-         * Send history to customer.
+         * Load history from MongoDB.
          */
-        socket.emit(
-          "support:conversation:history",
-          getSupportMessages(
-            conversation.id
-          )
-        );
+
+        try {
+          const messages =
+            await messageRepository
+              .findByConversationId(
+                conversation.id
+              );
+
+          socket.emit(
+            "support:conversation:history",
+            messages
+          );
+        } catch (error) {
+          console.error(
+            "Failed to load support history:",
+            error
+          );
+
+          return acknowledgement({
+            success: false,
+            error:
+              "Failed to load conversation history",
+          });
+        }
 
         /**
-         * Response.
+         * Acknowledge.
          */
-        acknowledgement({
+
+        return acknowledgement({
           success: true,
           conversation,
         });
@@ -503,6 +571,7 @@ io.on(
         /**
          * Only admin.
          */
+
         if (
           socket.data.supportIdentity
             .type !== "admin"
@@ -515,8 +584,10 @@ io.on(
         }
 
         /**
-         * Try to find existing conversation.
+         * Try to find existing
+         * conversation.
          */
+
         let conversation =
           conversationStore.getByCustomer(
             customerId,
@@ -527,6 +598,7 @@ io.on(
          * If it does not exist,
          * create it.
          */
+
         if (!conversation) {
           conversation =
             conversationStore.getOrCreate({
@@ -540,10 +612,6 @@ io.on(
           conversation
         );
 
-        /**
-         * IMPORTANT:
-         * We MUST acknowledge.
-         */
         return acknowledgement({
           success: true,
           conversation,
@@ -559,13 +627,14 @@ io.on(
 
     socket.on(
       "support:conversation:join",
-      (
+      async (
         { conversationId },
         acknowledgement
       ) => {
         /**
          * Only admin.
          */
+
         if (
           socket.data.supportIdentity
             .type !== "admin"
@@ -579,11 +648,8 @@ io.on(
 
         /**
          * Find conversation.
-         *
-         * IMPORTANT:
-         * conversationStore
-         * not SupportConversationStore.
          */
+
         const conversation =
           conversationStore.getById(
             conversationId
@@ -600,11 +666,8 @@ io.on(
         /**
          * Leave previous support
          * conversation rooms.
-         *
-         * This prevents an admin from
-         * receiving messages from
-         * multiple selected visitors.
          */
+
         for (
           const room of socket.rooms
         ) {
@@ -620,6 +683,7 @@ io.on(
         /**
          * Join selected conversation.
          */
+
         const room =
           getSupportRoom(
             conversation.id
@@ -635,19 +699,37 @@ io.on(
         );
 
         /**
-         * Send previous messages
-         * to admin.
+         * Load history from MongoDB.
          */
-        socket.emit(
-          "support:conversation:history",
-          getSupportMessages(
-            conversation.id
-          )
-        );
+
+        try {
+          const messages =
+            await messageRepository
+              .findByConversationId(
+                conversation.id
+              );
+
+          socket.emit(
+            "support:conversation:history",
+            messages
+          );
+        } catch (error) {
+          console.error(
+            "Failed to load support history:",
+            error
+          );
+
+          return acknowledgement({
+            success: false,
+            error:
+              "Failed to load conversation history",
+          });
+        }
 
         /**
          * Acknowledge.
          */
+
         return acknowledgement({
           success: true,
         });
@@ -662,7 +744,7 @@ io.on(
 
     socket.on(
       "message:send",
-      (
+      async (
         payload,
         acknowledgement
       ) => {
@@ -672,6 +754,7 @@ io.on(
         /**
          * Empty message.
          */
+
         if (!text) {
           return acknowledgement({
             success: false,
@@ -691,8 +774,8 @@ io.on(
          * SUPPORT CHAT
          * -------------------------------------------------
          *
-         * If conversationId exists,
-         * this is a support message.
+         * conversationId exists
+         * => Support Chat
          */
 
         if (
@@ -714,11 +797,13 @@ io.on(
           /**
            * Security:
            *
-           * Customer can only send to
-           * their own conversation.
+           * Customer can only send
+           * to their own conversation.
            *
-           * Admin can send to any conversation.
+           * Admin can send to any
+           * conversation.
            */
+
           if (
             supportIdentity.type !==
               "admin" &&
@@ -739,32 +824,51 @@ io.on(
           /**
            * Create support message.
            */
-          const message: ChatMessage = {
-            id: randomUUID(),
 
-            conversationId:
-              conversation.id,
+          const message:
+            ChatMessage = {
+              id: randomUUID(),
 
-            senderId:
-              supportIdentity.id,
+              conversationId:
+                conversation.id,
 
-            senderRole,
+              senderId:
+                supportIdentity.id,
 
-            text,
+              senderRole,
 
-            createdAt:
-              new Date().toISOString(),
-          };
+              text,
 
-          /**
-           * Save in temporary memory.
-           */
-          saveSupportMessage(message);
+              createdAt:
+                new Date().toISOString(),
+            };
 
           /**
-           * Send to everyone inside
-           * this conversation.
+           * Persist in MongoDB.
            */
+
+          try {
+            await messageRepository.create(
+              message
+            );
+          } catch (error) {
+            console.error(
+              "Failed to save support message:",
+              error
+            );
+
+            return acknowledgement({
+              success: false,
+              error:
+                "Failed to save message",
+            });
+          }
+
+          /**
+           * Send to everyone
+           * inside conversation.
+           */
+
           const room =
             getSupportRoom(
               conversation.id
@@ -782,7 +886,8 @@ io.on(
 
           return acknowledgement({
             success: true,
-            messageId: message.id,
+            messageId:
+              message.id,
           });
         }
 
@@ -791,45 +896,113 @@ io.on(
          * TASK CHAT
          * -------------------------------------------------
          *
-         * No conversationId means
-         * Task Chat.
+         * No conversationId
+         * => Task Chat
          */
 
-        const isTaskParticipant =
-          supportIdentity.id ===
-            TASK_OWNER_ID ||
-          supportIdentity.id ===
-            TASKER_ID;
-
-        if (!isTaskParticipant) {
+        if (!taskChatSession) {
           return acknowledgement({
             success: false,
             error:
-              "You are not allowed to send a task message",
+              "Task chat session not found",
           });
         }
 
-        const taskMessage: ChatMessage = {
-          id: randomUUID(),
+        /**
+         * Check participant.
+         */
 
-          conversationId:
-            TASK_ROOM,
+        const participant =
+          taskChatSession.participants.some(
+            (participant) =>
+              participant.id ===
+                supportIdentity.id &&
+              participant.role ===
+                supportIdentity.type
+          );
 
-          senderId:
-            supportIdentity.id,
-
-          senderRole,
-
-          text,
-
-          createdAt:
-            new Date().toISOString(),
-        };
+        if (!participant) {
+          return acknowledgement({
+            success: false,
+            error:
+              "You are not a participant of this chat",
+          });
+        }
 
         /**
-         * Send to Task room.
+         * Session must be active.
          */
-        io.to(TASK_ROOM).emit(
+
+        if (
+          taskChatSession.status !==
+          "active"
+        ) {
+          return acknowledgement({
+            success: false,
+            error:
+              "Task chat session is closed",
+          });
+        }
+
+        /**
+         * Task Chat room.
+         */
+
+        const taskChatRoom =
+          getTaskChatRoom(
+            taskChatSession.id
+          );
+
+        /**
+         * Create Task message.
+         */
+
+        const taskMessage:
+          ChatMessage = {
+            id: randomUUID(),
+
+            conversationId:
+              taskChatSession.id,
+
+            senderId:
+              supportIdentity.id,
+
+            senderRole,
+
+            text,
+
+            createdAt:
+              new Date().toISOString(),
+          };
+
+        /**
+         * Persist Task message
+         * in MongoDB.
+         */
+
+        try {
+          await messageRepository.create(
+            taskMessage
+          );
+        } catch (error) {
+          console.error(
+            "Failed to save task message:",
+            error
+          );
+
+          return acknowledgement({
+            success: false,
+            error:
+              "Failed to save message",
+          });
+        }
+
+        /**
+         * Send Task message
+         * to Task Chat room.
+         */
+
+        io.to(taskChatRoom).emit(
           "message:new",
           taskMessage
         );
@@ -903,6 +1076,7 @@ io.on(
         /**
          * Notify admins.
          */
+
         if (
           supportIdentity.type !==
           "admin"
@@ -938,11 +1112,108 @@ io.on(
 
 const PORT = 4000;
 
-httpServer.listen(
-  PORT,
-  () => {
-    console.log(
-      `🚀 Chat server running on http://localhost:${PORT}`
+async function startServer() {
+  try {
+    /**
+     * Connect MongoDB first.
+     */
+
+    await connectMongoDB();
+
+
+
+    await messageRepository.createIndexes();
+
+    await sessionRepository.createIndexes();
+
+     await supportConversationRepository
+    .createIndexes();
+    /**
+     * -----------------------------------------------------
+     * Load existing Task Chat Session
+     * -----------------------------------------------------
+     */
+
+    taskChatSession =
+      await sessionRepository.findByTaskId(
+        TASK_ID
+      );
+
+    /**
+     * -----------------------------------------------------
+     * Create Task Chat Session
+     * if it does not exist.
+     *
+     * Later Kafka will do this.
+     * -----------------------------------------------------
+     */
+
+    if (!taskChatSession) {
+      const now =
+        new Date().toISOString();
+
+      taskChatSession = {
+        id: `chat-session-${randomUUID()}`,
+
+        type: "task",
+
+        taskId: TASK_ID,
+
+        participants: [
+          {
+            id: TASK_OWNER_ID,
+            role: "user",
+          },
+          {
+            id: TASKER_ID,
+            role: "tasker",
+          },
+        ],
+
+        status: "active",
+
+        createdAt: now,
+
+        updatedAt: now,
+      };
+
+      await sessionRepository.create(
+        taskChatSession
+      );
+
+      console.log(
+        "💾 New Task Chat Session created:",
+        taskChatSession
+      );
+    } else {
+      console.log(
+        "💾 Existing Task Chat Session loaded:",
+        taskChatSession
+      );
+    }
+
+    /**
+     * -----------------------------------------------------
+     * Start HTTP + Socket.IO server
+     * -----------------------------------------------------
+     */
+
+    httpServer.listen(
+      PORT,
+      () => {
+        console.log(
+          `🚀 Chat server running on http://localhost:${PORT}`
+        );
+      }
     );
+  } catch (error) {
+    console.error(
+      "❌ Failed to start server:",
+      error
+    );
+
+    process.exit(1);
   }
-);
+}
+
+startServer();

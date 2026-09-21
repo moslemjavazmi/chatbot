@@ -5,18 +5,37 @@ import {
 
 /**
  * ---------------------------------------------------------
- * Support Presence
+ * Types
  * ---------------------------------------------------------
  */
 
-interface SupportPresence {
+export type SupportIdentityType =
+  | "user"
+  | "tasker"
+  | "guest"
+  | "admin";
+
+export type SupportCustomerType =
+  | "user"
+  | "tasker"
+  | "guest";
+
+export type SupportSenderRole =
+  | "user"
+  | "tasker"
+  | "guest"
+  | "admin";
+
+/**
+ * ---------------------------------------------------------
+ * Presence
+ * ---------------------------------------------------------
+ */
+
+export interface SupportPresence {
   id: string;
 
-  type:
-    | "user"
-    | "tasker"
-    | "guest"
-    | "admin";
+  type: SupportIdentityType;
 
   online: boolean;
 
@@ -25,7 +44,7 @@ interface SupportPresence {
 
 /**
  * ---------------------------------------------------------
- * Support Conversation
+ * Conversation
  * ---------------------------------------------------------
  */
 
@@ -42,7 +61,7 @@ export interface SupportConversation {
 
 /**
  * ---------------------------------------------------------
- * Support Message
+ * Message
  * ---------------------------------------------------------
  */
 
@@ -53,11 +72,7 @@ export interface SupportMessage {
 
   senderId: string;
 
-  senderRole:
-    | "user"
-    | "tasker"
-    | "guest"
-    | "admin";
+  senderRole: SupportSenderRole;
 
   text: string;
 
@@ -71,32 +86,12 @@ export interface SupportMessage {
  */
 
 interface ServerToClientEvents {
-  /**
-   * New message
-   */
   "message:new": (
     message: SupportMessage
   ) => void;
 
-  /**
-   * Conversation history
-   */
   "support:conversation:history": (
     messages: SupportMessage[]
-  ) => void;
-
-  /**
-   * Presence list
-   */
-  "support:presence:list": (
-    identities: SupportPresence[]
-  ) => void;
-
-  /**
-   * Presence update
-   */
-  "support:presence:update": (
-    presence: SupportPresence
   ) => void;
 }
 
@@ -108,7 +103,8 @@ interface ServerToClientEvents {
 
 interface ClientToServerEvents {
   /**
-   * Get/create support conversation
+   * Get/create current user's
+   * support conversation.
    */
   "support:conversation:get": (
     acknowledgement: (response: {
@@ -121,7 +117,8 @@ interface ClientToServerEvents {
   ) => void;
 
   /**
-   * Join support conversation
+   * Join an existing support
+   * conversation.
    */
   "support:conversation:join": (
     payload: {
@@ -135,13 +132,13 @@ interface ClientToServerEvents {
   ) => void;
 
   /**
-   * Send message
+   * Send support message.
    */
   "message:send": (
     payload: {
       text: string;
 
-      conversationId: string;
+      conversationId?: string;
     },
     acknowledgement: (response: {
       success: boolean;
